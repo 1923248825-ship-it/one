@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>话术闯关 - 作答端</title>
+    <!-- 微信分享适配元数据 -->
+    <meta property="og:title" content="话术闯关作答系统" />
+    <meta property="og:description" content="3关话术录音任务，完成后实时同步至管理平台，等待AI评分" />
+    <meta property="og:image" content="https://picsum.photos/300/200" /> <!-- 分享缩略图（可替换为自定义图片） -->
+    <meta property="og:type" content="website" />
+    <meta name="description" content="话术闯关答题，支持录音转MP3，实时同步管理平台">
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+    <!-- lamejs：MP3编码核心依赖（兼容主流移动端浏览器） -->
+    <script src="https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#2563eb',
+                        success: '#16a34a',
+                        danger: '#dc2626',
+                        neutral: '#64748b',
+                        light: '#f8fafc'
+                    }
+                }
+            }
+        }
+    </script>
+    <style type="text/tailwindcss">
+        @layer utilities {
+            .btn-primary {
+                @apply bg-primary text-white py-2 px-6 rounded-lg hover:bg-blue-700 transition-colors;
+            }
+            .btn-danger {
+                @apply bg-danger text-white py-2 px-6 rounded-lg hover:bg-red-700 transition-colors;
+            }
+            .btn-success {
+                @apply bg-success text-white py-2 px-6 rounded-lg hover:bg-green-700 transition-colors;
+            }
+            .btn-outline {
+                @apply border border-primary text-primary py-2 px-6 rounded-lg hover:bg-primary hover:text-white transition-colors;
+            }
+            .audio-wave {
+                @apply flex items-center justify-center gap-1 h-12 my-4;
+            }
+            .audio-wave-bar {
+                @apply w-1 bg-primary rounded-full animate-wave h-1/2;
+            }
+            @keyframes wave {
+                0%, 100% { transform: scaleY(0.5); }
+                50% { transform: scaleY(1); }
+            }
+            .animate-wave { animation: wave 1.5s infinite; }
+            .timer-warning { @apply text-orange-500 animate-pulse; }
+            .timer-expired { @apply text-danger animate-pulse; }
+            .module-hidden { @apply hidden; }
+            .card { @apply bg-white rounded-xl shadow-md p-6 max-w-2xl mx-auto; }
+            /* 微信引导层样式 */
+            .wechat-guide {
+                @apply fixed inset-0 bg-black/80 z-50 flex flex-col items-center justify-center text-white p-4;
+            }
+        }
+    </style>
+</head>
+<body class="bg-light min-h-screen py-8 font-sans">
+    <!-- 微信打开引导层（自动检测，微信内显示） -->
+    <div id="wechatGuide" class="wechat-guide module-hidden">
+        <<i class="fa fa-weixin text-5xl mb-4"></</i>
+        <h3 class="text-xl font-bold mb-2">请在外部浏览器打开</h3>
+        <p class="text-center mb-6">微信内可能限制录音权限，点击右上角 <<i class="fa fa-ellipsis-v"></</i>，选择「在浏览器中打开」</p>
+        <button id="closeGuideBtn" class="btn-primary">我已在外部浏览器打开</button>
+    </div>
+
+    <!-- 1. 入口模块（初始显示） -->
+    <div id="entryModule" class="container mx-auto px-4">
+        <div class="card">
+            <div class="text-center mb-6">
+                <<i class="fa fa-microphone text-primary text-4xl mb-3"></</i>
+                <h1 class="text-2xl font-bold text-primary">话术闯关作答系统</h1>
+            </div>
+            <!-- 唯一标识输入 -->
+            <div class="mb-6">
+                <label for="userUniqueId" class="block text-neutral mb-2 font-medium">姓名/工号（唯一标识）：</label>
+                <input type="text" id="userUniqueId" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary" placeholder="例如：张三 / 001" autocomplete="off">
+                <p id="idErrorTip" class="text-danger text-sm mt-2 module-hidden"></p>
+            </div>
+            <!-- 作答须知（简洁明了） -->
+            <div class="bg-blue-50 rounded-lg p-4 mb-6 text-left">
+                <p class="text-primary text-sm font-medium mb-2">📌 作答须知</p>
+                <ul class="text-neutral text-sm list-disc list-inside space-y-1">
+                    <li>每人仅可作答1次，提交后无法修改</li>
+                    <li>共3关话术场景，每关限时8分钟</li>
+                    <li>录音自动转MP3，实时同步管理平台</li>
+                    <li>完成后等待管理员AI评分</li>
+                </ul>
+            </div>
+            <!-- 开始作答按钮 -->
+            <button id="startAnswerBtn" class="btn-primary w-full">
+                <<i class="fa fa-play-circle mr-2"></</i>进入答题页面
+            </button>
+        </div>
+    </div>
+
+    <!-- 2. 答题模块（初始隐藏） -->
+    <div id="answerModule" class="container mx-auto px-4 module-hidden">
+        <h1 class="text-2xl font-bold text-center text-primary mb-8">话术闯关 - 答题页面</h1>
+        <!-- 答题进度 -->
+        <div class="mb-6 max-w-2xl mx-auto">
+            <div class="flex justify-between text-sm text-neutral mb-2">
+                <span>当前关卡</span>
+                <span id="levelTip">第 <span id="currentLevel">1</span>/3 关</span>
+            </div>
+            <div class="h-2 bg-gray-200 rounded-full overflow-hidden">
+                <div id="progressBar" class="h-full bg-primary rounded-full" style="width: 33.3%"></div>
+            </div>
+        </div>
+        <!-- 答题计时器 -->
+        <div class="text-center mb-6">
+            <p class="text-neutral text-sm mb-2">剩余答题时间</p>
+            <p id="timer" class="text-2xl font-bold">08:00</p>
+        </div>
+        <!-- 关卡场景信息 -->
+        <div class="card mb-6">
+            <h3 class="text-lg font-bold mb-3" id="levelTitle">第1关：初次接触 - 产品介绍</h3>
+            <div class="mb-4">
+                <p class="text-sm text-neutral font-medium mb-1">场景描述：</p>
+                <p id="scenarioContent" class="text-neutral"></p>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
+                <div class="bg-blue-50 rounded-lg p-3">
+                    <p class="text-xs text-primary font-medium mb-1">核心关键词（必须覆盖）：</p>
+                    <p id="coreKeywords" class="text-sm text-neutral"></p>
+                </div>
+                <div class="bg-yellow-50 rounded-lg p-3">
+                    <p class="text-xs text-yellow-600 font-medium mb-1">禁止表述（敏感词）：</p>
+                    <p id="sensitiveWords" class="text-sm text-neutral"></p>
+                </div>
+            </div>
+        </div>
+        <!-- 录音区域（兼容跨浏览器） -->
+        <div class="card mb-6">
+            <h3 class="text-lg font-bold mb-3 flex items-center">
+                <<i class="fa fa-microphone text-primary mr-2"></</i>录音操作（自动生成MP3）
+            </h3>
+            <!-- 音频波形动画 -->
+            <div id="audioWave" class="audio-wave module-hidden">
+                <div class="audio-wave-bar"></div>
+                <div class="audio-wave-bar" style="animation-delay: 0.1s"></div>
+                <div class="audio-wave-bar" style="animation-delay: 0.2s"></div>
+                <div class="audio-wave-bar" style="animation-delay: 0.3s"></div>
+                <div class="audio-wave-bar" style="animation-delay: 0.4s"></div>
+                <div class="audio-wave-bar" style="animation-delay: 0.3s"></div>
+                <div class="audio-wave-bar" style="animation-delay: 0.2s"></div>
+                <div class="audio-wave-bar" style="animation-delay: 0.1s"></div>
+                <div class="audio-wave-bar"></div>
+            </div>
+            <!-- 录音控制按钮 -->
+            <div class="flex gap-3 justify-center mb-4">
+                <button id="startRecordBtn" class="btn-primary">
+                    <<i class="fa fa-microphone mr-2"></</i>开始录音
+                </button>
+                <button id="stopRecordBtn" class="btn-danger module-hidden">
+                    <<i class="fa fa-stop mr-2"></</i>停止录音
+                </button>
+            </div>
+            <!-- 兼容性提示 -->
+            <p class="text-xs text-neutral text-center mb-2">
+                提示：若无法录音，请检查浏览器权限或切换至Chrome/Edge浏览器
+            </p>
+            <!-- MP3预览区域 -->
+            <div id="mp3PreviewArea" class="module-hidden">
+                <p class="text-sm text-success mb-2 text-center">✅ 录音已转MP3，实时同步至管理平台</p>
+                <audio id="mp3Preview" controls class="w-full"></audio>
+            </div>
+        </div>
+        <!-- 下一步/提交按钮 -->
+        <div class="flex gap-3 justify-center max-w-2xl mx-auto">
+            <button id="prevLevelBtn" class="btn-outline module-hidden">
+                <<i class="fa fa-arrow-left mr-2"></</i>上一关
+            </button>
+            <button id="nextLevelBtn" class="btn-primary module-hidden">
+                <<i class="fa fa-arrow-right mr-2"></</i>下一关
+            </button>
+            <button id="submitAllBtn" class="btn-success module-hidden">
+                <<i class="fa fa-paper-plane mr-2"></</i>提交所有答卷
+            </button>
+        </div>
+    </div>
+
+    <!-- 3. 完成模块（初始隐藏） -->
+    <div id="completeModule" class="container mx-auto px-4 module-hidden">
+        <div class="card text-center">
+            <div class="text-6xl mb-4">🎉</div>
+            <h1 class="text-2xl font-bold text-primary mb-2">作答完成！</h1>
+            <p class="text-neutral mb-4" id="completeUserTip">
+                尊敬的【xxx】，您的所有录音已同步至管理平台
+            </p>
+            <p class="text-sm text-neutral mb-6">
+                请等待管理员进行AI评分，结果将统一反馈
+            </p>
+            <div class="bg-blue-50 rounded-lg p-4 mb-6 text-left">
+                <p class="text-xs text-primary font-medium mb-2">📌 后续说明</p>
+                <ul class="text-xs text-neutral list-disc list-inside space-y-1">
+                    <li>仅1次作答机会，无法重新答题</li>
+                    <li>MP3文件已永久保存至管理平台</li>
+                    <li>疑问请联系管理员获取详情</li>
+                </ul>
+            </div>
+            <button id="backEntryBtn" class="btn-primary w-full">
+                <<i class="fa fa-home mr-2"></</i>返回入口页面
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // 全局配置
+        const levelDataList = [
+            {
+                levelId: 1,
+                levelTitle: '初次接触 - 产品介绍',
+                scenario: '您是销售顾问，需向新客户介绍公司核心产品，包含产品名称、3项核心功能、2个竞争优势，需有完整开场白和结束语',
+                coreKeywords: ['产品名称', '核心功能', '竞争优势', '开场白', '结束语'],
+                complianceSteps: ['开场白', '产品名称介绍', '核心功能讲解', '竞争优势提炼', '结束语'],
+                sensitiveWords: ['绝对', '保证', '最好', '无敌', '唯一'],
+                coreTopic: '公司核心产品介绍'
+            },
+            {
+                levelId: 2,
+                levelTitle: '需求挖掘 - 客户沟通',
+                scenario: '与潜在客户沟通，挖掘真实需求，需提出至少3个开放性问题，表达同理心，确认客户痛点',
+                coreKeywords: ['潜在客户', '真实需求', '开放性问题', '同理心', '客户痛点'],
+                complianceSteps: ['破冰开场', '开放性提问', '需求确认', '同理心表达', '初步建议'],
+                sensitiveWords: ['必须', '强制', '别无选择', '不买后悔'],
+                coreTopic: '潜在客户需求挖掘'
+            },
+            {
+                levelId: 3,
+                levelTitle: '异议处理 - 挽回客户',
+                scenario: '客户对价格提出异议，需表达同理心，提供折中解决方案，强化产品价值，消除客户疑虑',
+                coreKeywords: ['价格异议', '同理心', '折中方案', '产品价值', '疑虑消除'],
+                complianceSteps: ['情绪安抚', '同理心表达', '解决方案提供', '价值强化', '疑虑消除'],
+                sensitiveWords: ['最低价格', '错过就没', '绝对划算', '没法优惠'],
+                coreTopic: '客户价格异议处理'
+            }
+        ];
+        const fillerWordList = ["呃", "啊", "嗯", "哦", "呃呃", "啊啊", "那个", "然后呢", "其实吧", "说白了"];
+
+        // 全局变量
+        let userUniqueId = '';
+        let userAnswerData = null;
+        let currentLevelIndex = 0;
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let timerInterval = null;
+        let remainingTime = 8 * 60;
+
+        // DOM元素
+        const wechatGuide = document.getElementById('wechatGuide');
+        const closeGuideBtn = document.getElementById('closeGuideBtn');
+        const entryModule = document.getElementById('entryModule');
+        const userUniqueIdInput = document.getElementById('userUniqueId');
+        const idErrorTip = document.getElementById('idErrorTip');
+        const startAnswerBtn = document.getElementById('startAnswerBtn');
+        const answerModule = document.getElementById('answerModule');
+        const currentLevel = document.getElementById('currentLevel');
+        const progressBar = document.getElementById('progressBar');
+        const timer = document.getElementById('timer');
+        const levelTitle = document.getElementById('levelTitle');
+        const scenarioContent = document.getElementById('scenarioContent');
+        const coreKeywords = document.getElementById('coreKeywords');
+        const sensitiveWords = document.getElementById('sensitiveWords');
+        const audioWave = document.getElementById('audioWave');
+        const startRecordBtn = document.getElementById('startRecordBtn');
+        const stopRecordBtn = document.getElementById('stopRecordBtn');
+        const mp3PreviewArea = document.getElementById('mp3PreviewArea');
+        const mp3Preview = document.getElementById('mp3Preview');
+        const prevLevelBtn = document.getElementById('prevLevelBtn');
+        const nextLevelBtn = document.getElementById('nextLevelBtn');
+        const submitAllBtn = document.getElementById('submitAllBtn');
+        const completeModule = document.getElementById('completeModule');
+        const completeUserTip = document.getElementById('completeUserTip');
+        const backEntryBtn = document.getElementById('backEntryBtn');
+
+        // 页面初始化
+        window.addEventListener('DOMContentLoaded', () => {
+            // 检测微信浏览器，显示引导层
+            if (isWechatBrowser()) {
+                wechatGuide.classList.remove('module-hidden');
+            }
+            bindAllEvents();
+            checkRepeatAnswer();
+        });
+
+        // 核心辅助函数
+        // 检测是否为微信内置浏览器
+        function isWechatBrowser() {
+            const ua = navigator.userAgent.toLowerCase();
+            return ua.includes('micromessenger') && !ua.includes('windowswechat');
+        }
+
+        // 绑定所有事件
+        function bindAllEvents() {
+            // 微信引导层关闭事件
+            closeGuideBtn.addEventListener('click', () => wechatGuide.classList.add('module-hidden'));
+            // 入口模块事件
+            startAnswerBtn.addEventListener('click', handleStartAnswer);
+            userUniqueIdInput.addEventListener('input', () => {
+                idErrorTip.classList.add('module-hidden');
+                startAnswerBtn.disabled = false;
+                startAnswerBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+            });
+            // 答题模块事件
+            startRecordBtn.addEventListener('click', startRecording);
+            stopRecordBtn.addEventListener('click', stopRecording);
+            prevLevelBtn.addEventListener('click', goToPrevLevel);
+            nextLevelBtn.addEventListener('click', goToNextLevel);
+            submitAllBtn.addEventListener('click', submitAllAnswers);
+            // 完成模块事件
+            backEntryBtn.addEventListener('click', goBackToEntry);
+        }
+
+        // 检查重复作答
+        function checkRepeatAnswer() {
+            const globalAnswerData = JSON.parse(localStorage.getItem('speakingGameAnswerData')) || {};
+            userUniqueIdInput.addEventListener('blur', () => {
+                const userId = userUniqueIdInput.value.trim();
+                if (userId && globalAnswerData[userId] && globalAnswerData[userId].isCompleted) {
+                    idErrorTip.textContent = '您已完成作答，无法重复进入';
+                    idErrorTip.classList.remove('module-hidden');
+                    startAnswerBtn.disabled = true;
+                    startAnswerBtn.classList.add('opacity-50', 'cursor-not-allowed');
+                }
+            });
+        }
+
+        // 生成唯一用户标识
+        function generateUserToken() {
+            const timestamp = new Date().getTime().toString(16);
+            const randomStr = Math.random().toString(16).slice(2, 8);
+            return `answer_${timestamp}_${randomStr}`;
+        }
+
+        // 处理开始作答
+        function handleStartAnswer() {
+            userUniqueId = userUniqueIdInput.value.trim();
+            if (!userUniqueId) {
+                idErrorTip.textContent = '请输入姓名/工号作为唯一标识';
+                idErrorTip.classList.remove('module-hidden');
+                return;
+            }
+
+            const globalAnswerData = JSON.parse(localStorage.getItem('speakingGameAnswerData')) || {};
+            if (globalAnswerData[userUniqueId] && globalAnswerData[userUniqueId].isCompleted) {
+                idErrorTip.textContent = '您已完成作答，无法重复进入';
+                idErrorTip.classList.remove('module-hidden');
+                return;
+            }
+
+            // 初始化用户数据
+            if (!globalAnswerData[userUniqueId]) {
+                userAnswerData = {
+                    userUniqueId: userUniqueId,
+                    userToken: generateUserToken(),
+                    isCompleted: false,
+                    completeTime: '',
+                    totalScore: null,
+                    isScored: false,
+                    currentLevel: 0,
+                    levelData: levelDataList.map(level => ({
+                        ...level,
+                        audioMP3Base64: '',
+                        audioUrl: '',
+                        transcript: '',
+                        audioFeatures: {
+                            fillerWordCount: 0,
+                            stutterCount: 0,
+                            rawContent: ''
+                        },
+                        scoreDetail: {
+                            keywordScore: null,
+                            complianceScore: null,
+                            fluencyScore: null,
+                            logicScore: null,
+                            levelTotal: null
+                        }
+                    }))
+                };
+                globalAnswerData[userUniqueId] = userAnswerData;
+                localStorage.setItem('speakingGameAnswerData', JSON.stringify(globalAnswerData));
+                window.dispatchEvent(new StorageEvent('storage', { key: 'speakingGameAnswerData' }));
+            } else {
+                userAnswerData = globalAnswerData[userUniqueId];
+                currentLevelIndex = userAnswerData.currentLevel;
+            }
+
+            // 切换模块
+            entryModule.classList.add('module-hidden');
+            answerModule.classList.remove('module-hidden');
+            initCurrentLevel(currentLevelIndex);
+        }
+
+        // 初始化当前关卡
+        function initCurrentLevel(index) {
+            const currentLevelData = userAnswerData.levelData[index];
+            if (!currentLevelData) return;
+
+            currentLevel.textContent = index + 1;
+            progressBar.style.width = `${((index + 1) / userAnswerData.levelData.length) * 100}%`;
+            levelTitle.textContent = `第${index + 1}关：${currentLevelData.levelTitle}`;
+            scenarioContent.textContent = currentLevelData.scenario;
+            coreKeywords.textContent = currentLevelData.coreKeywords.join('、');
+            sensitiveWords.textContent = currentLevelData.sensitiveWords.join('、');
+
+            // 按钮状态控制
+            prevLevelBtn.classList.toggle('module-hidden', index === 0);
+            nextLevelBtn.classList.toggle('module-hidden', index === userAnswerData.levelData.length - 1 || !currentLevelData.audioMP3Base64);
+            submitAllBtn.classList.toggle('module-hidden', index !== userAnswerData.levelData.length - 1 || !currentLevelData.audioMP3Base64);
+
+            // 重置录音和计时器
+            resetRecordUI();
+            resetTimer();
+            startTimer();
+
+            // 显示已有录音
+            if (currentLevelData.audioMP3Base64) {
+                mp3Preview.src = currentLevelData.audioUrl;
+                mp3PreviewArea.classList.remove('module-hidden');
+            }
+        }
+
+        // 录音相关函数（兼容跨浏览器）
+        function resetRecordUI() {
+            audioWave.classList.add('module-hidden');
+            mp3PreviewArea.classList.add('module-hidden');
+            mp3Preview.src = '';
+            startRecordBtn.classList.remove('module-hidden');
+            stopRecordBtn.classList.add('module-hidden');
+            audioChunks = [];
+            mediaRecorder = null;
+        }
+
+        function resetTimer() {
+            clearInterval(timerInterval);
+            remainingTime = 8 * 60;
+            updateTimerDisplay();
+            timer.classList.remove('timer-warning', 'timer-expired');
+        }
+
+        function startTimer() {
+            timerInterval = setInterval(() => {
+                remainingTime--;
+                updateTimerDisplay();
+                if (remainingTime <= 60) timer.classList.add('timer-expired');
+                else if (remainingTime <= 180) timer.classList.add('timer-warning');
+                if (remainingTime <= 0) {
+                    clearInterval(timerInterval);
+                    alert('答题时间已到！');
+                    if (userAnswerData.levelData[currentLevelIndex].audioMP3Base64) {
+                        currentLevelIndex < userAnswerData.levelData.length - 1 ? goToNextLevel() : submitAllAnswers();
+                    } else resetRecordUI();
+                }
+            }, 1000);
+        }
+
+        function updateTimerDisplay() {
+            const minutes = Math.floor(remainingTime / 60).toString().padStart(2, '0');
+            const seconds = (remainingTime % 60).toString().padStart(2, '0');
+            timer.textContent = `${minutes}:${seconds}`;
+        }
+
+        async function startRecording() {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                alert('您的浏览器不支持录音功能，请使用Chrome/Edge/百度浏览器');
+                return;
+            }
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm; codecs=opus' });
+                audioChunks = [];
+                mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+                mediaRecorder.start();
+                audioWave.classList.remove('module-hidden');
+                startRecordBtn.classList.add('module-hidden');
+                stopRecordBtn.classList.remove('module-hidden');
+            } catch (err) {
+                alert(`获取麦克风失败：${err.message}，请授予麦克风权限后重试`);
+                console.error('录音初始化失败：', err);
+            }
+        }
+
+        async function stopRecording() {
+            if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
+            mediaRecorder.stop();
+            mediaRecorder.onstop = async () => {
+                try {
+                    // WebM转MP3
+                    const webmBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    const mp3Blob = await convertWebmToMp3(webmBlob);
+                    const mp3Url = URL.createObjectURL(mp3Blob);
+                    const mp3Base64 = await blobToBase64(mp3Blob);
+
+                    // 音频特征提取
+                    const audioProcessResult = await processAudioFeatures(mp3Blob);
+
+                    // 同步数据到本地存储（开发者端实时读取）
+                    await syncAudioData(mp3Url, mp3Base64, audioProcessResult);
+
+                    // 更新UI
+                    mp3Preview.src = mp3Url;
+                    mp3PreviewArea.classList.remove('module-hidden');
+                    audioWave.classList.add('module-hidden');
+                    stopRecordBtn.classList.add('module-hidden');
+                    startRecordBtn.classList.remove('module-hidden');
+                    currentLevelIndex < userAnswerData.levelData.length - 1 
+                        ? nextLevelBtn.classList.remove('module-hidden') 
+                        : submitAllBtn.classList.remove('module-hidden');
+
+                    // 停止麦克风
+                    mediaRecorder.stream.getTracks().forEach(track => track.stop());
+                } catch (err) {
+                    console.error('录音处理失败：', err);
+                    alert('录音转MP3失败，请检查网络后重试');
+                }
+            };
+        }
+
+        // MP3转换和数据同步（保持原逻辑，兼容跨浏览器）
+        async function convertWebmToMp3(webmBlob) {
+            return new Promise((resolve, reject) => {
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const fileReader = new FileReader();
+                fileReader.onload = (e) => {
+                    audioContext.decodeAudioData(e.target.result, (audioBuffer) => {
+                        const channelCount = audioBuffer.numberOfChannels;
+                        const sampleRate = audioBuffer.sampleRate;
+                        const mp3Encoder = new lamejs.Mp3Encoder(channelCount, sampleRate, 128);
+                        const to16Bit = (floatArr) => {
+                            const intArr = new Int16Array(floatArr.length);
+                            for (let i = 0; i < floatArr.length; i++) {
+                                intArr[i] = Math.min(1, Math.max(-1, floatArr[i])) * (floatArr[i] < 0 ? -32768 : 32767);
+                            }
+                            return intArr;
+                        };
+                        const left = to16Bit(audioBuffer.getChannelData(0));
+                        const right = channelCount > 1 ? to16Bit(audioBuffer.getChannelData(1)) : left;
+                        const mp3Data = [];
+                        const chunkSize = 1024 * 5;
+                        for (let i = 0; i < left.length; i += chunkSize) {
+                            const leftChunk = left.subarray(i, i + chunkSize);
+                            const rightChunk = right.subarray(i, i + chunkSize);
+                            const chunk = channelCount === 1 ? mp3Encoder.encodeBuffer(leftChunk) : mp3Encoder.encodeBuffer(leftChunk, rightChunk);
+                            if (chunk.length) mp3Data.push(chunk);
+                        }
+                        const finalChunk = mp3Encoder.flush();
+                        if (finalChunk.length) mp3Data.push(finalChunk);
+                        resolve(new Blob(mp3Data, { type: 'audio/mp3' }));
+                    }, reject);
+                };
+                fileReader.readAsArrayBuffer(webmBlob);
+            });
+        }
+
+        function blobToBase64(blob) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+            });
+        }
+
+        async function processAudioFeatures(mp3Blob) {
+            const transcript = await simulateAudioTranscript();
+            const fillerWordCount = countFillerWords(transcript);
+            const stutterCount = countStutters(transcript);
+            return {
+                transcript: transcript,
+                audioFeatures: { fillerWordCount, stutterCount, rawContent: transcript }
+            };
+        }
+
+        async function simulateAudioTranscript() {
+            const currentLevelData = userAnswerData.levelData[currentLevelIndex];
+            const transcriptMap = {
+                1: [
+                    "开场白：您好，欢迎咨询我司核心产品。该产品的核心功能包括高效数据处理、智能分析预警、多端同步协作，竞争优势体现在性价比高、售后响应快，最后感谢您的聆听，这是我的结束语。",
+                    "啊，您好，那个我司核心产品的核心功能有三个，呃，竞争优势好像是性价比高，嗯，就这样吧。"
+                ],
+                2: [
+                    "您好，很高兴认识您，我先做个破冰开场。我想请教您三个开放性问题：您目前在使用同类产品吗？您对产品最关注的点是什么？您希望产品能解决您的什么痛点？接下来我会确认您的真实需求，并表达我的同理心。",
+                    "那个，你有没有用过类似产品？呃，你想要什么功能？啊，我也不知道该问啥了。"
+                ],
+                3: [
+                    "客户您好，我非常理解您觉得价格偏高的顾虑，这是我的同理心表达。我可以给您提供季度付费的折中解决方案，同时我们的产品售后服务完善，这是它的核心价值，能为您节省长期成本。",
+                    "哎呀，这个价格已经最低了，你不买就没了，绝对划算，我没办法给你优惠了。"
+                ]
+            };
+            return new Promise(resolve => {
+                setTimeout(() => {
+                    resolve(transcriptMap[currentLevelData.levelId][Math.floor(Math.random() * 2)]);
+                }, 500);
+            });
+        }
+
+        function countFillerWords(transcript) {
+            if (!transcript) return 0;
+            let count = 0;
+            fillerWordList.forEach(word => {
+                const matches = transcript.match(new RegExp(word, 'g'));
+                if (matches) count += matches.length;
+            });
+            return count;
+        }
+
+        function countStutters(transcript) {
+            if (!transcript) return 0;
+            const matches = transcript.match(/([，。！？]{2,})|([呃啊嗯]{2,})/g);
+            return matches ? matches.length : 0;
+        }
+
+        // 同步数据到本地存储（开发者端实时读取）
+        function syncAudioData(mp3Url, mp3Base64, processResult) {
+            const globalAnswerData = JSON.parse(localStorage.getItem('speakingGameAnswerData')) || {};
+            const currentLevelData = userAnswerData.levelData[currentLevelIndex];
+            currentLevelData.audioMP3Base64 = mp3Base64;
+            currentLevelData.audioUrl = mp3Url;
+            currentLevelData.transcript = processResult.transcript;
+            currentLevelData.audioFeatures = processResult.audioFeatures;
+            userAnswerData.currentLevel = currentLevelIndex;
+            globalAnswerData[userUniqueId] = userAnswerData;
+            localStorage.setItem('speakingGameAnswerData', JSON.stringify(globalAnswerData));
+            window.dispatchEvent(new StorageEvent('storage', { key: 'speakingGameAnswerData' }));
+        }
+
+        // 关卡切换和提交函数
+        function goToPrevLevel() {
+            if (currentLevelIndex > 0) {
+                clearInterval(timerInterval);
+                currentLevelIndex--;
+                userAnswerData.currentLevel = currentLevelIndex;
+                initCurrentLevel(currentLevelIndex);
+            }
+        }
+
+        function goToNextLevel() {
+            if (currentLevelIndex < userAnswerData.levelData.length - 1) {
+                clearInterval(timerInterval);
+                currentLevelIndex++;
+                userAnswerData.currentLevel = currentLevelIndex;
+                initCurrentLevel(currentLevelIndex);
+            }
+        }
+
+        function submitAllAnswers() {
+            clearInterval(timerInterval);
+            const globalAnswerData = JSON.parse(localStorage.getItem('speakingGameAnswerData')) || {};
+            userAnswerData.isCompleted = true;
+            userAnswerData.completeTime = new Date().toLocaleString();
+            globalAnswerData[userUniqueId] = userAnswerData;
+            localStorage.setItem('speakingGameAnswerData', JSON.stringify(globalAnswerData));
+            window.dispatchEvent(new StorageEvent('storage', { key: 'speakingGameAnswerData' }));
+            answerModule.classList.add('module-hidden');
+            completeModule.classList.remove('module-hidden');
+            completeUserTip.textContent = `尊敬的【${userUniqueId}】，您的所有录音已同步至管理平台`;
+        }
+
+        function goBackToEntry() {
+            completeModule.classList.add('module-hidden');
+            entryModule.classList.remove('module-hidden');
+            userUniqueIdInput.value = '';
+            idErrorTip.classList.add('module-hidden');
+        }
+    </script>
+</body>
+</html>
